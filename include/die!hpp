@@ -1,0 +1,288 @@
+#pragma once
+
+#include <vector>
+#include <string>
+
+#include <functional>
+#include <memory>
+#include <exception>
+
+#include <iostream>
+#include <sstream>
+
+namespace die
+{
+	class Panic: public std::exception
+	{
+	public:
+		inline Panic(const std::string &msg = "")
+			: std::exception(), msg(msg)
+		{
+		}
+
+		const char *what() const noexcept
+		{
+			if (msg.empty())
+				return "(no message)";
+			else
+				return msg.data();
+		}
+
+	private:
+		std::string msg;
+	};
+
+	namespace tests
+	{
+		class AbstractTest
+		{
+		public:
+			inline AbstractTest(const std::string &name, std::function<void()> fn)
+				: name(name), fn(fn)
+			{
+			}
+
+			virtual ~AbstractTest() {}
+
+			inline const std::string &getName() const { return name; }
+
+			virtual bool exec() = 0;
+
+		protected:
+			std::string name;
+			std::function<void()> fn;
+		};
+
+		class ShouldNotPanic: public AbstractTest
+		{
+		public:
+			inline ShouldNotPanic(const std::string &name, std::function<void()> fn)
+				: AbstractTest(name, fn)
+			{
+			}
+
+			 ~ShouldNotPanic() {}
+
+			 bool exec()
+			 {
+				 bool passed = true;
+				 std::cout << "test " << name << ": should not panic -> " << std::flush;
+
+				 try
+				 {
+					 fn();
+					 std::cout << "passed" << std::endl;
+				 }
+				 catch (const Panic &p)
+				 {
+					 std::cout << "FAILED (panic: " << p.what() << ")" << std::endl;
+					 passed = false;
+				 }
+
+				 return passed;
+			 }
+		};
+
+		class ShouldPanic: public AbstractTest
+		{
+		public:
+			inline ShouldPanic(const std::string &name, std::function<void()> fn)
+				: AbstractTest(name, fn)
+			{
+			}
+
+			~ShouldPanic() {}
+
+			bool exec()
+			{
+				bool passed = false;
+				std::cout << "test " << name << ": should panic -> " << std::flush;
+
+				try
+				{
+					fn();
+					std::cout << "FAILED" << std::endl;
+				}
+				catch (const Panic &)
+				{
+					std::cout << "passed" << std::endl;
+					passed = true;
+				}
+
+				return passed;
+			}
+		};
+
+		template <typename E>
+		class ShouldThrow: public AbstractTest
+		{
+		public:
+			inline ShouldThrow(const std::string &name, const E &exception, const std::string &type, std::function<void()> fn)
+				: AbstractTest(name, fn), exception(exception), type(type)
+			{
+			}
+
+			~ShouldThrow() {}
+
+			bool exec()
+			{
+				const std::string what = exception.what();
+				std::cout << "test " << name << ": should throw " << type
+					<< "(\"" << what << "\") -> " << std::flush;
+
+				try
+				{
+					fn();
+					std::cout << "FAILED (didn't throw anything)" << std::endl;
+				}
+				catch (const E &e)
+				{
+					if (e.what() == what)
+					{
+						std::cout << "passed" << std::endl;
+						return true;
+					}
+
+					std::cout << "FAILED (wrong message: " << e.what()
+						<< ")" << std::endl;
+				}
+				catch (...)
+				{
+				//	TODO: put something more interesting (getting type, etc)
+					std::cout << "FAILED (wrong exception type)" << std::endl;
+				}
+
+				return false;
+			}
+
+		private:
+			E exception;
+			std::string type;
+		};
+
+		using Element = std::shared_ptr<AbstractTest>;
+	}
+
+	class Framework
+	{
+	public:
+		inline Framework(const std::string &name, const std::string &purpose = "")
+			: name(name), purpose(purpose), passed(0), elements()
+		{
+		}
+
+		void displayGreetings() const
+		{
+			display_dashes();
+
+			std::cout << "This is test series:" << std::endl << "\t" << name << std::endl;
+			if (!purpose.empty())
+				std::cout << "Its purpose is:" << std::endl << "\t" << purpose << std::endl;
+
+			display_dashes();
+		}
+
+		void displaySummary() const
+		{
+			display_dashes();
+
+			std::cout << "Summary:" << std::endl;
+			const size_t n_tests = elements.size();
+			const size_t failed = n_tests - passed;
+
+			if (failed == 0)
+				std::cout << "\tall " << n_tests << " tests passed" << std::endl;
+			else
+				std::cout << "\t\tpassed: " << passed << " of " << n_tests
+					<< " (" << double(passed) / n_tests * 100 << "%)" << std::endl
+					<< "\t\tfailed: " << failed << " of " << n_tests
+					<< " (" << double(failed) / n_tests * 100 << "%)" << std::endl;
+
+			display_dashes();
+		}
+
+		inline void addShouldNotPanic(const std::string &name, std::function<void()> fn)
+		{
+			elements.push_back(std::make_shared<tests::ShouldNotPanic>(name, fn));
+		}
+
+		inline void addShouldPanic(const std::string &name, std::function<void()> fn)
+		{
+			elements.push_back(std::make_shared<tests::ShouldPanic>(name, fn));
+		}
+
+		template <typename E>
+		inline void addShouldThrow(const std::string &name, const E &exception, const std::string &type, std::function<void()> fn)
+		{
+			elements.push_back(std::make_shared<tests::ShouldThrow<E>>(name, exception, type, fn));
+		}
+
+		void exec()
+		{
+			std::cout << std::endl;
+
+			for (auto &el: elements)
+			{
+				if (el->exec())
+					++passed;
+			}
+
+			std::cout << std::endl;
+		}
+
+	private:
+		std::string name, purpose;
+		size_t passed;
+		std::vector<tests::Element> elements;
+
+		static inline void display_dashes()
+		{
+		//	80 dashes
+			std::cout << "----------------------------------------"
+				<< "----------------------------------------" << std::endl;
+		}
+	};
+
+	inline void panic(const std::string &msg)
+	{
+		throw Panic(msg);
+	}
+
+	inline void assert(bool result, const std::string &msg = "assert failed")
+	{
+		if (!result)
+			throw Panic(msg);
+	}
+
+	inline void assert_not(bool result, const std::string &msg = "assert_not failed")
+	{
+		if (!result)
+			throw Panic(msg);
+	}
+
+	template <typename T>
+	inline void assert_eq(const T &lhs, const T &rhs)
+	{
+		if (!(lhs == rhs))
+		{
+			std::stringstream ss;
+
+			ss << "lhs different from rhs, with lhs = " << lhs << " and rhs = " << rhs;
+
+			throw Panic(ss.str());
+		}
+	}
+
+	template <typename T>
+	inline void assert_ne(const T &lhs, const T &rhs)
+	{
+		if (lhs == rhs)
+		{
+			std::stringstream ss;
+
+			ss << "either lhs or rhs should be different from " << lhs;
+
+			throw Panic(ss.str());
+		}
+	}
+}
